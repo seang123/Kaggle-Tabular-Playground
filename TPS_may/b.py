@@ -12,8 +12,14 @@ Things we can compute:
     n-grams
     how many doubles/tripples/quadruplets
 
-
 """
+
+x = np.loadtxt("best_f.txt")
+
+print(x)
+print(x.shape)
+
+raise
 
 def uniqueLength(row):
     return len(list(set(row['f_27'])))
@@ -32,10 +38,6 @@ def preprocess(df) -> pd.DataFrame:
     df = df.drop(columns=['f_28', 'f_29', 'f_30'])
     return df
 
-X = pd.read_csv("Data/train.csv")
-X = preprocess(X)
-strings = list(X['f_27'].values)
-print(X.head())
 
 def sum_string(row):
     return sum([ord(s)-ord('A') for s in list(row.f_27)])
@@ -57,6 +59,11 @@ def first_element(row):
 def last_element(row):
     return list(row.f_27)[-1]
 
+"""
+X = pd.read_csv("Data/train.csv")
+X = preprocess(X)
+strings = list(X['f_27'].values)
+print(X.head())
 X['string_sum'] = X.apply(sum_string, axis=1)
 X['first_elem'] = X.apply(first_element, axis=1)
 le = LabelEncoder()
@@ -69,3 +76,10 @@ X['longest_seq_elem'] = X.apply(longest_subseq_elem, axis=1)
 le = LabelEncoder()
 X['longest_seq_elem'] = le.fit_transform(X['longest_seq_elem'])
 print(X.head())
+"""
+
+train = pd.read_parquet("Data/pre_processed_train.parquet")
+#test = pd.read_parquet("Data/pre_processed_test.parquet")
+
+print(train.iloc[0])
+

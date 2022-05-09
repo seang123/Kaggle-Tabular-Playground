@@ -1,14 +1,18 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder, PolynomialFeatures
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
-from sklearn.metrics import roc_auc_score, accuracy_score, auc, roc_curve
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, KFold
+from sklearn.metrics import roc_auc_score, accuracy_score, auc, roc_curve, f1_score
+from sklearn.neural_network import MLPClassifier
+from sklearn.tree import DecisionTreeClassifier
 from xgboost import XGBClassifier
 import reduce_mem
 import xgboost as xgb
 import xgbfir
 import time
 import sys
+import pipeline
+import pipeline2
 
 """
     Dataframe chaining - tomaugspurger.github.io/method-chaining.html
@@ -52,7 +56,8 @@ def z_score(X, Y):
 
 def boost_model(X_train, X_test, y_train, y_test):
     """ XGB model - reaches 96.6% AUC after 700 iterations """
-    params = {'n_estimators': 2000, #900, # 4096, # nr. boosting rounds
+
+    params = {'n_estimators': 1500, #900, # 4096, # nr. boosting rounds
             'max_depth': 12, # 8,
             'max_leaves': 0,
             'learning_rate': 0.15,
@@ -67,12 +72,17 @@ def boost_model(X_train, X_test, y_train, y_test):
             'objective': 'binary:logistic',
             'base_score': 0.49, # initial prediction score of all instances (global bias)
             'tree_method': 'hist', # 'approx', # 'gpu_hist' for gpu training
-            'early_stopping_rounds':256,
+            'early_stopping_rounds':1000,
             'eval_metric':['auc'],
             }
     model = XGBClassifier(**params)
+
+    #X_train = np.concatenate((X_train, X_test), axis=0)
+    #y_train = np.concatenate((y_train, y_test), axis=0)
+    #print("concat X_train:", X_train.shape)
+
     model.fit(X_train, y_train, eval_set = [(X_test, y_test)], verbose=50)
-    print(model.feature_importances_)
+    #print(model.feature_importances_)
 
     """ # Save model
     bst = model.get_booster()
@@ -81,24 +91,20 @@ def boost_model(X_train, X_test, y_train, y_test):
     xgbfir.saveXgbFI(bst, feature_names = feature_names)
     """
 
-    ypreds = model.predict(X_test) # (n, 2)
-    print("ROC-AUC:", roc_auc_score(y_test, ypreds))
-
-    ypredsp = model.predict_proba(X_test)[:,1]
-    np.save(open(f"xgb_predict.npy", "wb"), ypredsp)
+    display_score(model, X_train, y_train, 'Train')
+    display_score(model, X_test, y_test, 'Val')
 
     return model
 
 def grid_search(train, target):
     """ Grid search over XGBoost parameters
     """
-    skf = StratifiedKFold(n_splits=2, shuffle=True, random_state=1001)
+    #skf = StratifiedKFold(n_splits=2, shuffle=True, random_state=1001)
     param_grid = {
-            'n_estimators': [50], #900, # 4096, # nr. boosting rounds
+            'n_estimators': [200], #900, # 4096, # nr. boosting rounds
             'max_depth': [5, 8, 12], # 8,
-            'max_leaves': [0, 2, 4],
+            'max_leaves': [2, 4],
             'learning_rate': [0.15],
-            'grow_policy': [0, 1],
             'subsample': [0.95],
             'colsample_bytree': [0.95],
             'reg_alpha': [1.0, 1.5, 2.],  # L1
@@ -109,56 +115,61 @@ def grid_search(train, target):
             'objective': ['binary:logistic'],
             'base_score': [0.5],
             'tree_method': ['hist'],
-            #'early_stopping_rounds':[256],
             'eval_metric':['auc'],
         }
     model = XGBClassifier()
-    grid_cv = GridSearchCV(model, param_grid, n_jobs=-1, cv=skf.split(train,target), scoring="roc_auc")
+    grid_cv = GridSearchCV(model, param_grid, n_jobs=-1, scoring="roc_auc")#, cv=skf.split(train,target), scoring="roc_auc")
     _ = grid_cv.fit(train, target)
     print("best param:\n", grid_cv.best_params_)
     print("best score: ", grid_cv.best_score_)
 
+@timeit
+def dtree(X_train, X_test, y_train, y_test, **kwargs):
+    """ baseline: 1.0 train .77 validation score """
+    from sklearn.tree import DecisionTreeClassifier, export_text, ExtraTreeClassifier
+    from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
+    m = DecisionTreeClassifier(max_features=None, max_depth=16) # 16 is optimal
+    #m = ExtraTreesClassifier(n_estimators=200, n_jobs=-1)
+    #m = RandomForestClassifier(n_estimators=200, max_depth=None, n_jobs=-1)
+    m = m.fit(X_train, y_train)
 
-def boost_model_(X_train, X_test, y_train, y_test, param):
-    """ Fit model - eval on val set """
-    model = XGBClassifier(**param).fit(
-            X_train, y_train, eval_set=[(X_test, y_test)], verbose=50)
-    ypreds = model.predict(X_test)
-    print("ROC-AUC:", roc_auc_score(y_test, ypreds))
-    return model
+    #r = export_text(m, feature_names=list(kwargs.get('feature_names')))
+    #print(r)
+    display_score(m, X_train, y_train, 'Train')
+    display_score(m, X_test, y_test, 'Val')
+    return m
+
+def display_score(model, data, labels, name='Val'):
+    ypreds_p = model.predict_proba(data)[:,1]
+    ypreds   = model.predict(data)
+    print(f"{name}:")
+    print(f"\taccuracy: {accuracy_score(labels, ypreds):.4f}")
+    print(f"\troc-auc:  {roc_auc_score(labels, ypreds_p):.4f}")
+    print(f"\tF1:       {f1_score(labels, ypreds, average='macro'):.4f}")
 
 def mlp(X_train, X_test, y_train, y_test):
-    from sklearn.neural_network import MLPClassifier
 
     m = MLPClassifier(
-            #hidden_layer_sizes=(64, 64, 16, 1),
-            hidden_layer_sizes=(256, 128, 64, 16, 1),
+            hidden_layer_sizes=(64, 64, 16, 1),
             activation = 'relu',
-            solver='adam',
-            alpha=0.0001,
+            solver='sgd',#'adam',
+            #alpha=0.0001,
+            alpha=0.32,
             batch_size=4096,
-            learning_rate_init=0.0001,
+            learning_rate_init=0.0008,#0.0001,
             learning_rate='constant', # 'adaptive', #'constant',
-            max_iter = 600,
+            max_iter = 1200,
             random_state=46,
             verbose=True,
             momentum=0.9,
-            validation_fraction=0.1,
+            validation_fraction=0.05,
     ).fit(X_train, y_train)
 
-    print("score:", m.score(X_test, y_test))
-    ypred = m.predict(X_test)
-    print("ROC-AUC:", roc_auc_score(y_test, ypred))
-    #fpr, tpr, threshold = roc_curve(y_test, ypred)
-
-    #ypredp = m.predict_proba(X_test)[:,1]
-    #np.save(open(f"mlp_predict.npy", "wb"), ypredp)
+    display_score(m, X_train, y_train, 'Train')
+    display_score(m, X_test, y_test, 'Val')
     return m
 
 def generate_submission(pred, name: str = 'submission'):
-    #x = list(zip(tid, pred))
-    #sub = pd.DataFrame.from_records(x, columns=['id', 'target'])
-    #sub.to_csv(f"{home_dir}/submission.csv", index=False)
     sub = pd.read_csv(f"{home_dir}/Data/sample_submission.csv")
     sub['target'] = pred
     sub.to_csv(f"{home_dir}/{name}.csv", index=False)
@@ -181,9 +192,7 @@ def poly_builder_mf(df_train, df_test, degree=2):
     """ Generate polynomial features """
     # Features which might have a higher-order interaction
     cols = [['f_00', 'f_01', 'f_02', 'f_05'], ['f_21', 'f_22'], ['f_20', 'f_25'], ['f_23', 'f_28'], ['f_28', 'f_25', 'f_23', 'f_20'], ['f_19', 'f_24'], ['f_03', 'f_04', 'f_06']]
-    #cols = [['f_26'], ['f_25'], ['f_28'], ['f_24'], ['f_20'], ['f_21'], ['f_22'], ['f_23'], ['f_19']]
     cols = [['f_03', 'f_04', 'f_06'], ['f_28', 'f_25'], ['f_23', 'f_20']]
-    #cols = ['f_26', 'f_21', 'f_30', 'f_27_num', 'f_22', 'f_01', 'f_02', 'f_00', 'ch1', 'ch6', 'f_05', 'f_24', 'f_19', 'f_25', 'f_28', 'f_29']
 
     pb = PolynomialFeatures(degree=degree, include_bias=False, interaction_only=False)
     for i, c in enumerate(cols):
@@ -196,69 +205,67 @@ def poly_builder_mf(df_train, df_test, degree=2):
         poly_test = pd.DataFrame(poly_test, columns=col_names)
         df_train = pd.concat([df_train, poly], axis=1)
         df_test  = pd.concat([df_test, poly_test], axis=1)
-    """
-    poly = pb.fit_transform(df_train[cols])
-    poly_test = pb.transform(df_test[cols])
-    poly = poly[:,len(cols):] # remove the duplicate features
-    poly_test = poly_test[:,len(cols):]
-    col_names = [f'poly_{x}' for x in range(poly.shape[1])]
-    poly = pd.DataFrame(poly, columns=col_names)
-    poly_test = pd.DataFrame(poly_test, columns=col_names)
-    df_train = pd.concat([df_train, poly], axis=1)
-    df_test  = pd.concat([df_test, poly_test], axis=1)
-    df_train.drop(columns=cols)
-    df_test.drop(columns=cols)
-    """
     return df_train, df_test
+
+def k_fold_cv(train, targets):
+    """ KFold cross validation """
+    kf = KFold(n_splits=5)
+    for train_idx, test_idx in kf.split(train):
+        X_train, X_test = train[train_idx], train[test_idx]
+        y_train, y_test = targets[train_idx], targets[test_idx]
+
+    model = boost_model(X_train, X_test, y_train, y_test)
+    return model
+
+def monte_carlo_cv(train, targets):
+    from sklearn.model_selection import ShuffleSplit
+
+    kf = ShuffleSplit(test_size=0.1, train_size=0.8, n_splits=10)
+    for train_idx, test_idx in kf.split(train):
+        X_train, X_test = train[train_idx], train[test_idx]
+        y_train, y_test = targets[train_idx], targets[test_idx]
+
+        model = boost_model(X_train, X_test, y_train, y_test)
+    return
+
+def rec_feat_select(X_train, y_train):
+
+    from sklearn.feature_selection import RFE
+    dtree = DecisionTreeClassifier()
+    selector = RFE(dtree, n_features_to_select=30, step=1)
+    selector = selector.fit(X_train, y_train)
+    print(selector.support_)
+    print(selector.ranking_)
 
 
 def main():
 
-    X_train, X_test, y_train, y_test, train, test = load_data()
+    X_train, X_test, y_train, y_test, targets, feature_names, train, test = pipeline.load_data(load_cache=True)
     print(X_train.shape)
     print(X_test.shape)
     print(y_train.shape)
     print(y_test.shape)
 
-    """
+    #model = dtree(X_train, X_test, y_train, y_test, feature_names = feature_names)
+    #ypreds = model.predict_proba(test)[:,1]
+    #generate_submission(ypreds, name='dtree_submission')
+    #sys.exit(0)
+
     model = mlp(X_train, X_test, y_train, y_test)
     ypreds = model.predict_proba(test)[:,1]
-    generate_submission(ypreds, name='mlp_submission_poly_d3')
-    """
+    generate_submission(ypreds, name='mlp_submission_sgd')
+    sys.exit(0)
+
+    #grid_search(X_train, y_train)
+
+    #monte_carlo_cv(train, targets)
 
     model = boost_model(X_train, X_test, y_train, y_test)
     ypreds = model.predict_proba(test)[:,1] # (n, 2)
-    generate_submission(ypreds, name='xgb_submission_poly')
+    print("ypreds:", ypreds.shape)
+    #np.save(open("xbg_predictions_test.npy", "wb"), ypreds)
+    generate_submission(ypreds, name='xgb_submission')
 
-@timeit
-def load_data():
-    """
-    s = time.time()
-    train = preprocess(read(f"{home_dir}/train.csv")) # (900_000, 42)
-    print(f"load + preprocess: {(time.time() - s):.4f}")
-    test = preprocess(read(f"{home_dir}/test.csv")) # (700_000, 42)
-    print("train:", train.shape)
-    print("test: ", test.shape)
-    train = reduce_mem.reduce_memory_usage(train)
-    test  = reduce_mem.reduce_memory_usage(test)
-    train.to_csv(f"{home_dir}/train_mod.csv")
-    test.to_csv(f"{home_dir}/test_mod.csv")
-    """
-    s = time.time()
-    train = pd.read_csv(f"{home_dir}/Data/train_mod.csv")
-    test = pd.read_csv(f"{home_dir}/Data/test_mod.csv")
-    print(f"load: {(time.time() - s):.4f}")
-
-    # Polynomials
-    train, test = poly_builder_mf(train, test, degree=4)
-
-    target = train['target'].values
-    train.drop(columns=['target'], inplace=True)
-    feature_names = train.columns
-    train, test = z_score(train, test)
-    X_train, X_test, y_train, y_test = train_test_split(train, target, test_size=0.005, random_state=4242)
-
-    return X_train, X_test, y_train, y_test, train, test
 
 if __name__ == '__main__':
     main()

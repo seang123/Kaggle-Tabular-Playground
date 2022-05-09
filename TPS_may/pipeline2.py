@@ -61,9 +61,29 @@ class Timer(object):
     def __exit__(self, type, value, traceback):
         print(f"{self.name} - {(time.time() - self.start):.3f}")
 
+
 @timeit
 def pre_process(df):
     """ Pre-process the dataframe """
+
+    df = df.drop(columns=['f_03', 'f_04', 'f_06'])
+
+    float_features = [f for f in df.columns if df[f].dtype =='float64' and f !='target']
+    int_features   = [f for f in df.columns if df[f].dtype == 'int64' and f != 'id']
+    print("ff", float_features)
+    print("if", int_features)
+
+    # Z-score each column
+    for f in [*float_features, *int_features]:
+        #df[f] = df.apply(lambda x: (x - np.mean(x))/np.std(x), axis=0)
+        df[f] = (df[f] - np.mean(df[f])) / np.std(df[f])
+
+    for f in float_features:
+        #df[f'inv_{f}'] = df[f].apply((lambda x: 1 / x), axis=0)
+        df[f'inv_{f}'] = 1 / df[f]
+
+    df['f_28_abs_log'] = np.log(abs(df['f_28']))
+
     #df = df.drop(columns=['id'])
     # Categorize the string
     with Timer("str ord"):
@@ -74,46 +94,10 @@ def pre_process(df):
 
     df['non_unq_len'] = 10 - df['f_27_num']
 
-    float_features = [f for f in df.columns if df[f].dtype =='float64' and f !='target']
-    for f in float_features:
-        df[f'inv_{f}'] = 1 / df[f]
-
-    df['i_02_21'] = (df.f_21 + df.f_02 > 5.2).astype(int)
-                    - (df.f_21 + df.f_02 < -5.3).astype(int)
-    df['i_05_22'] = (df.f_22 + df.f_05 > 5.1).astype(int)
-                    - (df.f_22 + df.f_05 < -5.4).astype(int)
-    i_00_01_26 = df.f_00 + df.f_01 + df.f_26
-    df['i_00_01_26'] = (i_00_01_26 > 5.0).astype(int)
-                    - (i_00_01_26 < -5.0).astype(int)
-
-
-
     ## slight correlation with target (0.1)
     df['string_sum'] = df.apply(sum_string, axis=1)
-    """
-    ## Slight correlation with target (-0.1)
-    df['first_elem'] = df.apply(first_element, axis=1)
-    df['last_elem'] = df.apply(last_element, axis=1)
-    le = LabelEncoder()
-    df['first_elem'] = le.fit_transform(df['first_elem'])
-    le = LabelEncoder()
-    df['last_elem'] = le.fit_transform(df['last_elem'])
-    ## Doesn't correlate with the target
-    df['longest_seq'] = df.apply(longest_subseq, axis=1) # nr. of unique chars in string
-    df['longest_seq_elem'] = df.apply(longest_subseq_elem, axis=1)
-    #df = df.apply(longest_subseq_, axis=1)
-    le = LabelEncoder()
-    df['longest_seq_elem'] = le.fit_transform(df['longest_seq_elem'])
 
-    df['126'] = df['f_21'] + df['f_22'] + df['f_26']
-    df['f_28'] = np.sqrt(abs(df['f_28']))
-    df['f_25'] = np.sqrt(abs(df['f_25']))
-    df['f_24'] = np.sqrt(abs(df['f_24']))
-    df['f_04'] = np.sin(df['f_04']) - df['f_28']
-    df['f_27_num_29_30'] = df['f_27_num'] + df['f_29'] + df['f_30']
-    """
 
-    #df = df.drop(columns=['f_27'])
 
     return df
 
@@ -167,26 +151,6 @@ def process_f_27(df):
 
     return f27
 
-def pseudo_labelling(train, test, targets):
-
-    t = pd.read_csv("mlp_submission.csv")['target'].values
-    t0 = np.where(t < 0.0001)[0]
-    t1 = np.where(t > 0.9999)[0]
-
-    print("Pre pseudo-labelling:", train.shape)
-    train = np.concatenate([train, test[t0,:], test[t1,:]], axis=0)
-    print("Post pseudo-labelling:", train.shape)
-
-    labels = [i for i in t[t0]] + [i for i in t[t1]]
-    labels = [0 if i <= 0.5 else 1 for i in labels]
-
-    print("pre targets:", targets.shape)
-    labels = np.concatenate([targets, labels], axis=0)
-    print("post targets:", labels.shape)
-
-    return train, test, labels
-
-
 
 @timeit
 def load_data(load_cache=False, save=False):
@@ -232,30 +196,26 @@ def load_data(load_cache=False, save=False):
         train_df = pd.read_parquet("Data/pre_processed_train.parquet")
         test_df  = pd.read_parquet("Data/pre_processed_test.parquet")
 
+
     # Extract target
-    cols_to_drop = ['target', 'id']#*[f'f_{i:02}' for i in range(0, 7)]]#, 'string_sum', 'longest_seq', 'longest_seq_elem', 'first_elem', 'last_elem']
+    cols_to_drop = ['target', 'id']#, 'string_sum', 'longest_seq', 'longest_seq_elem', 'first_elem', 'last_elem']
 
     target = train_df['target'].values
     train  = train_df.drop(columns=cols_to_drop)
     test   = test_df.drop(columns=cols_to_drop)
 
-    feature_names = train.columns
-    print("train columns:", feature_names)
+    train = train.to_numpy()
+    test  = test.to_numpy()
 
     # Poly features
     #train, test = poly_features(train, test, degree=3, features = [['f_22', 'f_26', 'f_21'], ['f_03', 'f_04', 'f_06'], ['f_28', 'f_04'], ['f_28', 'f_21', 'f_24']])
 
-    # Z-score
-    train, test = z_score(train, test)
-
-    # Pseudo-labelling
-    train, test, target = pseudo_labelling(train, test, target)
-
     # Split
     #X_train, X_test, y_train, y_test, f_train, f_test = train_test_split(train, target, f27_train, test_size=0.1, random_state=4242) # 0.005
-    X_train, X_test, y_train, y_test = train_test_split(train, target, test_size=0.05, random_state=4242) # 0.005
+    X_train, X_test, y_train, y_test = train_test_split(train, target, test_size=0.1, random_state=4242) # 0.005
 
-    return X_train, X_test, y_train, y_test, target, feature_names, train, test
+    return X_train, X_test, y_train, y_test, target, train, test
+
 
 if __name__ == '__main__':
 

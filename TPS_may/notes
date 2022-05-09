@@ -1,0 +1,9 @@
+
+ToDo / Ideas:
+
+    Embedding of f_27
+        split into list of ints and feed to embedding layer
+
+    Polynomial features 
+
+    Look at non-confident predictions (close to 0.5)
